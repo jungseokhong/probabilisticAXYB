@@ -41,7 +41,9 @@ described above and in `instruction.docx`. It includes:
 * maximum-likelihood solvers for noise configurations 1, 2, and 3;
 * the analytic gradients used by the MATLAB implementation;
 * a closed-form Shah initializer for `AX = YB` (the Python replacement for
-  using `solveAXYB_sgo` merely to obtain an initial estimate);
+  using `solveAXYB_sgo` merely to obtain an initial estimate), with an
+  excitation check that rejects motions from which `X` and `Y` cannot be
+  separated;
 * calibration uncertainty for all three noise configurations;
 * Lie-group, covariance, noise, and synthetic-data utilities; and
 * support for both Python `(n, 4, 4)` and MATLAB `(4, 4, n)` tensor layouts.
@@ -127,6 +129,61 @@ Pass `return_result=True` to either solver to also receive convergence status,
 iteration count, final log likelihood, and (for configurations 1/2) the latent
 `C`, `N`, and `M` transformations. See `examples/basic.py` for an executable
 counterpart to `main_exmaple1.m`.
+
+### Choosing a noise model on real data
+
+Identifiability first. `AX = YB` separates `X` from `Y` only when the measured
+motions rotate about at least two non-parallel axes; a stationary or single-axis
+sequence produces a plausible-looking residual alongside an arbitrarily wrong
+`Y`. `solve_axyb` now raises on such input, and `rotation_excitation(A)` reports
+the margin directly (roughly `0.3`-`0.5` for well-conditioned motion, below
+`1e-4` for single-axis motion).
+
+Note that a rank check on the translation system does not catch this. Sensor
+jitter makes `numpy.linalg.lstsq` report full rank even for a target that never
+moved; only the condition number gives it away. Nor is such a target useless. It
+is degenerate for the *joint* problem, but when several targets share one `Y`,
+the moving ones determine `Y` and then `X = A^-1 Y B` holds at every pose of the
+stationary one, recovered directly with no optimisation.
+
+Noise model second. Only the *ratio* of the `A` and `B` covariances is
+identifiable, so one side must be anchored at a trusted value and the other
+estimated. Two points matter when picking that anchor on hardware:
+
+* Repeat-to-repeat and within-window variance measure **precision, not
+  accuracy**. Returning to the same commanded joint configuration and observing
+  a few microns of forward-kinematics spread says the encoders repeat; it says
+  nothing about link lengths, joint offsets, or gravity-induced deflection,
+  which are identical on every repeat and therefore invisible in a repeat
+  covariance. The same holds for motion capture, whose specification is accuracy
+  including volume-dependent bias.
+* Covariances estimated per pose from a handful of repeats are rank deficient by
+  construction (two samples give a rank-one `3x3`). Inverting them, even with an
+  eigenvalue floor, yields near-hard constraints along essentially arbitrary
+  directions. Pool the residuals across all poses of a target instead, and pass
+  a single broadcast `3x3` per block.
+
+To measure the combined error without committing to any calibration estimate,
+compare `A_i^-1 A_j` against `B_i^-1 B_j`: they are conjugate, so their rotation
+angles and screw-axis displacements must agree. Whatever they disagree by is
+measurement error that no modelling choice can flatter.
+
+`examples/calibrate_rby1.py` applies all of this to a robot dataset in which `A`
+is forward kinematics and `B` is motion capture: it screens targets by
+excitation, reports the invariant disagreement, anchors the mocap covariance at
+its specification, re-estimates the forward-kinematics covariance from the
+residual, cross-checks the shared robot-world transform across targets, and then
+recovers `X` for the deferred targets against that pinned `Y`.
+
+```bash
+python -m examples.calibrate_rby1 <dataset directory>
+```
+
+Note that treating motion capture as the *noiseless* measurement does not need a
+separate solver. `AX = YB` implies `B X^-1 = Y^-1 A`, so passing the swapped
+pair to `solve_axyb_prob_noiseless_a` and inverting the results places the noise
+on `A` in the link frame.
+
 
 ### Optional solver backends
 
