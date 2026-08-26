@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "probabilistic-axyb"
+version = "0.1.0"
+description = "NumPy port of probabilistic hand-eye and robot-world calibration AX=YB"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.21", "scipy>=1.8"]
+
+[project.optional-dependencies]
+numba = ["numba>=0.56"]
+speed = ["numba>=0.56"]
+test = []
+
+[tool.setuptools.packages.find]
+include = ["probabilistic_axyb*"]
