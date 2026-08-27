@@ -355,6 +355,139 @@ td .dim { color: var(--muted); }
   </section>
 
   <section>
+    <h2>Convention</h2>
+    <p class="h2sub">Which arrangement actually closes the loop</p>
+    <p>
+      Read <span class="mono">A X = Y B</span> as: <em>base &rarr; link &rarr; markers</em> must equal
+      <em>base &rarr; mocap origin &rarr; markers</em>. Both sides land on the same physical marker
+      cluster. Getting the order wrong fails silently &mdash; every arrangement returns
+      <em>some</em> answer &mdash; so the calibration now checks it on every run.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th class="l">Arrangement</th><th>Rotation</th><th>Translation</th><th class="l">Verdict</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><span class="mono">A X = Y B</span></td><td>1.112 deg</td><td>3.487 mm</td>
+              <td class="l" style="text-align:left"><span class="chip s1">closes</span></td></tr>
+          <tr><td><span class="mono">X A = Y B</span></td><td>102.587 deg</td><td>995.359 mm</td><td class="l dim" style="text-align:left">&mdash;</td></tr>
+          <tr><td><span class="mono">A X = B Y</span></td><td>110.438 deg</td><td>1465.420 mm</td><td class="l dim" style="text-align:left">&mdash;</td></tr>
+          <tr><td><span class="mono">A&#8315;&#185; X = Y B</span></td><td>128.307 deg</td><td>2018.710 mm</td><td class="l dim" style="text-align:left">&mdash;</td></tr>
+          <tr><td><span class="mono">A X = Y B&#8315;&#185;</span></td><td>128.455 deg</td><td>3292.051 mm</td><td class="l dim" style="text-align:left">&mdash;</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="cols" style="margin-top:20px">
+      <div class="card"><p class="metric">A</p><h3>base_T_link</h3>
+        <p>Forward kinematics from <span class="mono">/tf</span>. About 1186 mm for a mid-arm link.</p></div>
+      <div class="card"><p class="metric">B</p><h3>map_T_rigid</h3>
+        <p>Motion capture from <span class="mono">/rigid_bodies</span>. About 1846 mm.</p></div>
+      <div class="card"><p class="metric">X</p><h3>link_T_rigid</h3>
+        <p>Marker mounting, one per target. Centimetres &mdash; about 181 mm here.</p></div>
+      <div class="card"><p class="metric">Y</p><h3>base_T_map</h3>
+        <p>Robot base to mocap origin, shared by every target. About 1447 mm.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Error scales</h2>
+    <p class="h2sub">Three different things, all called &ldquo;error&rdquo;</p>
+    <p>
+      These get conflated easily and they are orders of magnitude apart. Reading one for
+      another is the most common way to misjudge this dataset.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr>
+            <th class="l">Target</th>
+            <th>Mocap jitter, one frame</th>
+            <th>&hellip;on the window mean</th>
+            <th>Non-repeatability</th>
+            <th>FK vs mocap</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>link_right_arm_1</td><td>0.0707 mm</td><td class="dim">0.0020 mm</td><td>0.2745 mm</td><td>0.9643 mm</td></tr>
+          <tr><td>link_right_arm_2</td><td>0.0300 mm</td><td class="dim">0.0009 mm</td><td>0.1216 mm</td><td>0.6635 mm</td></tr>
+          <tr><td>link_right_arm_3</td><td>0.0348 mm</td><td class="dim">0.0010 mm</td><td>0.1445 mm</td><td>1.2049 mm</td></tr>
+          <tr><td>link_right_arm_5</td><td>0.0476 mm</td><td class="dim">0.0014 mm</td><td>0.1364 mm</td><td>1.6800 mm</td></tr>
+          <tr><td>end_effector</td><td>0.0539 mm</td><td class="dim">0.0016 mm</td><td>0.1656 mm</td><td>2.3390 mm</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note">
+      <p>
+        <strong>Non-repeatability is real, and it is not sensor noise.</strong> Each window
+        averages ~1200 mocap frames, so what actually enters <span class="mono">B</span> is the
+        third-decimal column &mdash; about 0.001&nbsp;mm. The repeat-to-repeat scatter is
+        <strong>~100&times; larger</strong>. The robot does not return to the same pose. Forward
+        kinematics cannot see this at all: its own repeat scatter is 0.007&ndash;0.046&nbsp;mm,
+        purely encoder repeatability, because the encoders return to the same counts whether or
+        not the link does.
+      </p>
+      <p>
+        Session drift does not explain it either &mdash; differences between epochs account for
+        only <strong>5&ndash;6%</strong> of the variance. Nor does the approach path: the visit
+        order was shuffled, giving ~4.7 distinct predecessors per configuration, and a regression
+        from the predecessor's pose to the error scores <span class="mono">-0.03</span> to
+        <span class="mono">0.00</span>. Whatever causes it is not the previous pose.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>What the residual is made of</h2>
+    <p class="h2sub">The latent pose C, and why the noise model decides the answer</p>
+    <p>
+      Configuration 2 posits a latent true pose <span class="mono">C&#7522;</span> per measurement and
+      writes the error as an FK part composed with a mocap part:
+      <span class="mono">N&#7522; = X C&#7522;&#8315;&#185; A&#7522;</span>,
+      <span class="mono">M&#7522; = C&#7522;&#8315;&#185; Y B&#7522;</span>, and algebraically the loop-closure
+      residual is exactly the two composed. <span class="mono">C&#7522;</span> is not bookkeeping: it is
+      <span class="mono">base_T_rigid</span>, where the marker cluster actually was.
+    </p>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr>
+            <th class="l">Target</th>
+            <th>|N| FK side</th>
+            <th>|M| mocap side</th>
+            <th>C to robot's view</th>
+            <th>C to mocap's view</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>link_right_arm_1</td><td>1.094 mm</td><td>0.257 mm</td><td>1.183 mm</td><td>0.257 mm</td></tr>
+          <tr><td>link_right_arm_2</td><td>0.195 mm</td><td>0.195 mm</td><td>0.923 mm</td><td>0.195 mm</td></tr>
+          <tr><td>link_right_arm_3</td><td>0.998 mm</td><td>0.176 mm</td><td>1.289 mm</td><td>0.176 mm</td></tr>
+          <tr><td>link_right_arm_5</td><td>2.065 mm</td><td>0.161 mm</td><td>2.135 mm</td><td>0.161 mm</td></tr>
+          <tr><td>end_effector</td><td>3.161 mm</td><td>0.140 mm</td><td>3.047 mm</td><td>0.140 mm</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note">
+      <p>
+        <span class="mono">C</span> sits between the robot's view
+        (<span class="mono">A X</span>) and mocap's view (<span class="mono">Y B</span>), and it
+        hugs mocap &mdash; 0.14&nbsp;mm away from it against 3.05&nbsp;mm from the robot at the end
+        effector. That is the noise model doing its actual job: <strong>deciding where the truth
+        lies between two instruments that disagree.</strong> Change the anchor and
+        <span class="mono">C</span> slides toward whichever you declared more reliable, which is
+        exactly why anchoring one side is required rather than optional.
+      </p>
+      <p>
+        The split also settles what the residual is: <span class="mono">|N|</span> dwarfs
+        <span class="mono">|M|</span> everywhere except <span class="mono">link_right_arm_2</span>,
+        whose FK estimate is pinned at the mocap floor. <strong>The residual is forward-kinematics
+        error almost entirely.</strong>
+      </p>
+    </div>
+  </section>
+
+  <section>
     <h2>Marker transforms</h2>
     <p class="h2sub">X = link_T_rigid, one per target, ordered down the kinematic chain</p>
     <p>
@@ -446,6 +579,16 @@ td .dim { color: var(--muted); }
         <span class="mono">link_right_arm_0</span> &mdash; alongside a <span class="mono">Y</span> that
         sat 24&nbsp;m and 42&nbsp;m away. A low residual proves a fit, not an identifiable one.
       </p>
+      <p>
+        <strong>Data-quality caveat on <span class="mono">link_right_arm_5</span>.</strong> A note in
+        the bag directory records that mocap kept losing track of links 4 and 5, and the numbers
+        agree: it carries the thinnest marker coverage of any target (median 3.84 valid markers
+        against 4.9&ndash;5.7 elsewhere) and 17 of its 100 windows were dropped. Its influence on the
+        answer is small &mdash; excluding it moves <span class="mono">Y</span> by 0.046&deg; /
+        1.23&nbsp;mm, inside the uncertainty &mdash; so it is retained, but it is the first target to
+        drop if a result looks suspect. <span class="mono">link_right_arm_4</span> is absent from the
+        dataset entirely.
+      </p>
     </div>
   </section>
 
@@ -514,7 +657,36 @@ td .dim { color: var(--muted); }
           error because one rigid <span class="mono">(X, Y)</span> pair has to fit all poses at once.
           For the two stage&#8209;2 rows this column instead shows <span class="mono">scatter</span> &mdash;
           the spread of per&#8209;pose <span class="mono">X</span> estimates about their mean, which is a
-          consistency check, not a fit error.
+          consistency check, not a fit error, and the two are not comparable.
+        </dd>
+      </div>
+      <div>
+        <dt>&sigma; vs residual</dt>
+        <dd>
+          These measure the same error in different units, which is why the columns look further
+          apart than they are. <strong>FK &sigma; is a per&#8209;axis standard deviation</strong> &mdash; a
+          model parameter, pooled from the <span class="mono">N&#7522;</span> translations and fed back
+          as the weighting. <strong>Residual is the length of a 3&#8209;D vector</strong> &mdash; a direct
+          measurement, no model involved. For isotropic error the two differ by
+          <span class="mono">&radic;3</span>: at the end effector 1.834&nbsp;mm per axis becomes
+          3.177&nbsp;mm of vector length, against a measured residual of 3.135&nbsp;mm.
+          <em>Judge the fit by the residual</em>, which is assumption&#8209;free; read &sigma; as what the
+          solver believes about the FK side after attributing the rest to mocap.
+        </dd>
+      </div>
+      <div>
+        <dt>The iteration</dt>
+        <dd>
+          FK noise is estimated from the fit and fed back into it: solve &rarr; split the error
+          into <span class="mono">N</span> and <span class="mono">M</span> &rarr; re-estimate
+          &Sigma;<sub>N</sub> from <span class="mono">N</span> &rarr; solve again. Note it is
+          <span class="mono">N</span> that returns, not the raw residual &mdash; feeding back the
+          residual would count mocap error as FK error. &Sigma;<sub>M</sub> is never re-estimated,
+          and that fixed anchor is what gives the loop a unique fixed point instead of letting both
+          covariances drift together. The first pass matters most: <span class="mono">Y</span> moves
+          9.3&nbsp;mm as the weighting corrects itself, then it converges geometrically and is
+          below 0.25&nbsp;mm by the third pass. Three iterations is enough; past five you are
+          refining digits the ~1.7&nbsp;mm calibration uncertainty makes meaningless.
         </dd>
       </div>
     </dl>
@@ -637,7 +809,11 @@ td .dim { color: var(--muted); }
       Generated by <code>examples/calibrate_rby1.py</code> against
       <code>probabilistic_axyb_dataset_valid_markers</code>, noise configuration 2, SciPy trust&#8209;region
       backend, five reweighting passes per target. Reproduce with
-      <code>python -m examples.calibrate_rby1 &lt;dataset&nbsp;directory&gt;</code>.
+      <code>python -m examples.calibrate_rby1 &lt;dataset&nbsp;directory&gt;</code> &mdash; every table on
+      this page is printed by that run, including the convention check, the error scales, and the
+      N/M split, so a future capture produces the same report without hand assembly.
+      See <code>rby1_calibration_readme.md</code> for the collection protocol and
+      <code>examples/build_error_dataset.py</code> for turning these results into training labels.
     </p>
   </div>
 

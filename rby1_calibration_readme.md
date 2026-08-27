@@ -57,12 +57,92 @@ compose with joint 0's and fix both.
 **Vary the wrist.** Distal links need orientation diversity, not just position
 diversity, to be well conditioned.
 
-**Repeat each configuration a few times.** Useful for detecting non-repeatability.
-Just don't expect repeat variance to measure accuracy — see §5.
+**Repeat each configuration 3 times, and spend the rest of your budget on more
+configurations.** Repeats are worth having, but not for the reason they look like —
+see "How many repeats" below.
 
 **Keep every marker visible.** On Aug 25, 36 of 700 observations were dropped for
 invalid markers and 1 more for having too few repeats left afterwards. Check
 occlusion before a long capture, not after.
+
+### How many repeats
+
+Repeats measure something real, and it is worth being precise about what.
+
+**What the repeat scatter is not: sensor noise.** Each window averages ~1200 mocap
+frames, which drives the noise on a window *mean* down to about 0.0016 mm. The
+observed repeat-to-repeat scatter is 0.12–0.28 mm depending on the link — roughly
+**100× that floor**. It is real physical non-repeatability: the robot does not return
+to the same pose. Forward kinematics cannot see it (its own repeat scatter is
+0.007–0.046 mm, purely encoder repeatability, because the encoders return to the same
+counts whether or not the link does), so motion capture is the only instrument here
+that measures it. Session drift does not explain it either — between-epoch
+differences account for only 5–6% of the variance.
+
+**What repeats cannot give you: a per-configuration covariance.** A covariance from
+`n` samples has rank `n − 1`, so a 6-DoF pose covariance needs `n ≥ 7` merely to be
+full rank, and the relative error on a variance estimate is `sqrt(2/(n−1))` — 71% at
+`n = 5`, 100% at `n = 3`. Any single configuration's estimate is very noisy. What
+makes it usable is fitting sigma(q) as a *smooth* function, so neighbouring
+configurations share information — which is why coverage matters more than depth.
+
+**Non-repeatability varies a lot between configurations** — 0.019 mm to 0.838 mm on
+the Aug 25 data, a 40× range. Whether that variation is *predictable* from
+configuration is untested: leave-one-configuration-out skill ran from −0.83 to +0.20,
+which at 20 configurations means "unknown", not "no". Settling this is one of the
+things a larger capture buys.
+
+**Outlier detection.** 2–3 configurations per target run 4–8× above the rest, mostly
+body-specific rather than pose-global (only configuration 8 was flagged by 4 of 7
+targets, the rest by one or two), which points at individual rigid bodies losing
+markers. Three repeats let a majority vote identify the odd one; two only tell you
+that two observations disagree.
+
+**Path dependence — tested, and not present in this data.** The stronger argument for
+many repeats is that the error at a pose may depend on how the arm got there
+(backlash, hysteresis), so repeats sample the distribution over approach paths. The
+Aug 25 capture tests this by construction: the epochs are shuffled, so each
+configuration was reached from ~4.7 distinct predecessors across its 5 repeats. Two
+tests find nothing:
+
+- *Directional hysteresis.* The repeat-to-repeat error component along the direction
+  of travel into the pose averages 0.000–0.009 mm, all `|t| < 1.5`, and the spread is
+  roughly isotropic (along/perpendicular 0.4–1.3×) rather than concentrated along the
+  travel direction.
+- *Predictability.* A regression from the predecessor's pose to the
+  configuration-centred error scores skill `-0.03` to `0.00` under
+  leave-one-configuration-out. The predecessor carries no information.
+
+That is physically plausible — the RB-Y1 uses harmonic drives, which have very little
+backlash. Caveat on power: the test would not see an effect below ~0.05 mm, and it
+uses the Cartesian approach direction as a proxy because the dataset carries no joint
+states. Testing per-joint approach *sign*, which is what backlash actually depends on,
+needs the joint-state export.
+
+**Spend the budget on configurations, at 3 repeats each.** Repeats and configurations
+come out of the same total, so the question is always what a marginal visit buys. Both
+quantities you want to predict — systematic error (0.38–1.06 mm) and non-repeatability
+(0.12–0.28 mm) — are functions of configuration over a 7-DoF space, and extra repeats
+at a point you already sampled teach you nothing about the shape of either.
+
+| total visits | good split | configurations | noise dof |
+|---|---|---|---|
+| 1200 | 3 × 400 | 400 | 800 |
+| 1500 | 3 × 500 | 500 | 1000 |
+| 2000 | 4 × 500 | 500 | 1500 |
+
+Prefer more configurations over more repeats until you reach 3; past 4 the return is
+poor. Sample the joint space with a space-filling design (Latin hypercube or a
+low-discrepancy sequence) rather than uniform random draws — at a few hundred points
+in 7 dimensions, coverage is the binding constraint and random sampling wastes it on
+clusters.
+
+**If path dependence is still a live hypothesis, test it separately.** A dedicated
+experiment is the only thing with the power to settle it: with sigma ≈ 0.165 mm, a
+design needs ~170 samples per approach direction to resolve a 0.05 mm effect, so about
+1400 observations for 8 directions. Note the size before committing — a plausible
+harmonic-drive backlash effect is 10–40× smaller than the systematic error you are
+trying to model, so it is usually not worth the budget.
 
 ---
 
