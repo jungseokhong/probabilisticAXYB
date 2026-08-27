@@ -218,7 +218,7 @@ def calibrate(a, b, iterations=ITERATIONS, verbose=True):
         mocap_position,
         noise_configuration=NOISE_CONFIGURATION,
     )
-    return x, y, covariance_x, covariance_y, (fk_rotation, fk_position)
+    return x, y, covariance_x, covariance_y, (fk_rotation, fk_position), result
 
 
 def mocap_noiseless(a, b, fk_rotation, fk_position):
@@ -238,6 +238,85 @@ def format_sigma(covariance):
     rotation = np.rad2deg(np.sqrt(np.trace(covariance[:3, :3]) / 3.0))
     translation = np.sqrt(np.trace(covariance[3:, 3:]) / 3.0) * 1e3
     return rotation, translation
+
+
+def convention_check(a, b, x, y):
+    """Residual of A X = Y B against the arrangements it is most often confused with.
+
+    Getting the order wrong is a silent failure -- every arrangement produces *some*
+    answer -- so the check is worth running once per dataset rather than trusting the
+    documentation.
+    """
+    candidates = {
+        "A X = Y B  (this convention)": [inv_se3(a[i] @ x) @ (y @ b[i]) for i in range(len(a))],
+        "X A = Y B": [inv_se3(x @ a[i]) @ (y @ b[i]) for i in range(len(a))],
+        "A X = B Y": [inv_se3(a[i] @ x) @ (b[i] @ y) for i in range(len(a))],
+        "A^-1 X = Y B": [inv_se3(inv_se3(a[i]) @ x) @ (y @ b[i]) for i in range(len(a))],
+        "A X = Y B^-1": [inv_se3(a[i] @ x) @ (y @ inv_se3(b[i])) for i in range(len(a))],
+    }
+    out = {}
+    for label, deltas in candidates.items():
+        rotation = [np.rad2deg(np.linalg.norm(log_so3(d[:3, :3]))) for d in deltas]
+        translation = [np.linalg.norm(d[:3, 3]) * 1e3 for d in deltas]
+        out[label] = (float(np.sqrt(np.mean(np.square(rotation)))),
+                      float(np.sqrt(np.mean(np.square(translation)))))
+    return out
+
+
+def error_scales(data, x, y):
+    """The three quantities that get called 'error' but differ by orders of magnitude.
+
+    Reported together because reading one for another is the easiest mistake to make
+    with this dataset: sensor jitter, the robot failing to return to the same pose,
+    and forward kinematics disagreeing with motion capture are three different things.
+    """
+    a, b, uid = data["A"], data["B"], data["unique_id"]
+    per_frame = float(np.sqrt(np.trace(data["B_within_cov_position"], axis1=1, axis2=2)).mean())
+    frames = float(data["B_sample_count"].mean())
+    window_mean = per_frame / np.sqrt(max(frames, 1.0))
+
+    residual = np.stack([(inv_se3(a[i] @ x) @ (y @ b[i]))[:3, 3] for i in range(len(a))])
+    centred = residual.copy()
+    for u in np.unique(uid):
+        mask = uid == u
+        centred[mask] -= centred[mask].mean(axis=0)
+    repeat = float(np.sqrt((np.linalg.norm(centred, axis=1) ** 2).mean()))
+
+    _, screw = invariant_disagreement(a, b)
+    return {
+        "mocap_frame_jitter_mm": per_frame * 1e3,
+        "mocap_window_mean_mm": window_mean * 1e3,
+        "non_repeatability_mm": repeat * 1e3,
+        "fk_vs_mocap_mm": screw * 1e3,
+        "frames_per_window": frames,
+    }
+
+
+def noise_split(result):
+    """Split the loop-closure error into its FK side and its mocap side.
+
+    In configuration 2 the solver posits a latent true pose ``C_i`` and writes the
+    error as ``N_i`` (forward kinematics) composed with ``M_i`` (motion capture).
+    Comparing their magnitudes says which instrument the residual is actually made of.
+    """
+    n_translation = np.linalg.norm(result.n_noise[:, :3, 3], axis=1)
+    m_translation = np.linalg.norm(result.m_noise[:, :3, 3], axis=1)
+    return (float(np.sqrt((n_translation ** 2).mean()) * 1e3),
+            float(np.sqrt((m_translation ** 2).mean()) * 1e3))
+
+
+def latent_placement(result, a, b, x, y):
+    """How far the inferred true pose C_i sits from each instrument's view of it.
+
+    ``C_i`` is ``base_T_rigid`` -- where the marker cluster actually was. The robot
+    says ``A_i X``, motion capture says ``Y B_i``, and C lands between them in
+    proportion to what the noise model says each is worth. This is the noise model's
+    effect made visible.
+    """
+    to_robot = [np.linalg.norm((inv_se3(result.c[i]) @ (a[i] @ x))[:3, 3]) for i in range(len(a))]
+    to_mocap = [np.linalg.norm((inv_se3(result.c[i]) @ (y @ b[i]))[:3, 3]) for i in range(len(a))]
+    return (float(np.sqrt(np.mean(np.square(to_robot))) * 1e3),
+            float(np.sqrt(np.mean(np.square(to_mocap))) * 1e3))
 
 
 def main() -> None:
@@ -273,6 +352,16 @@ def main() -> None:
 
     print()
     print("=" * 96)
+    print("Transform convention  (getting the order wrong fails silently, so check it)")
+    print("=" * 96)
+    probe_name, probe_a, probe_b = usable[0]
+    probe_x, probe_y = solve_axyb(probe_a, probe_b)
+    for label, (rotation, translation) in convention_check(probe_a, probe_b, probe_x, probe_y).items():
+        print(f"  {label:30s} rot {rotation:8.3f} deg   pos {translation:10.3f} mm")
+    print(f"  (checked on {probe_name}; only the true arrangement closes the loop)")
+
+    print()
+    print("=" * 96)
     print("Measurement consistency  (independent of X and Y, so no modelling choice can flatter it)")
     print("=" * 96)
     print(f"  {'target':20s} {'median rot':>12} {'median screw':>14}    versus mocap spec")
@@ -290,12 +379,18 @@ def main() -> None:
           f"{MOCAP_SIGMA_POSITION * 1e3:.1f} mm / {np.rad2deg(MOCAP_SIGMA_ROTATION):.1f} deg, FK from residual)")
     print("=" * 96)
     solutions = {}
+    diagnostics = {}
     for name, a, b in usable:
         print(f"  {name}:")
-        x, y, covariance_x, covariance_y, fk = calibrate(a, b, arguments.iterations)
+        x, y, covariance_x, covariance_y, fk, result = calibrate(a, b, arguments.iterations)
         sigma_x = format_sigma(covariance_x)
         sigma_y = format_sigma(covariance_y)
         solutions[name] = (x, y, a, b, fk, sigma_x, sigma_y)
+        diagnostics[name] = {
+            "scales": error_scales(np.load(arguments.dataset / f"{name}.npz"), x, y),
+            "split": noise_split(result),
+            "latent": latent_placement(result, a, b, x, y),
+        }
         rotation, translation = pose_residuals(a, b, x, y)
         print(f"      residual rms   {np.rad2deg(np.sqrt((rotation ** 2).mean())):6.3f} deg"
               f" / {np.sqrt((translation ** 2).mean()) * 1e3:6.3f} mm")
@@ -324,6 +419,34 @@ def main() -> None:
         print(f"  -> spread exceeds the reported sigma by {spread * 1e3 / reported:.1f}x. The reported")
         print("     covariance assumes the noise model is correct and the error is zero-mean; the")
         print("     dominant FK error is neither. Quote the cross-target spread as the error bar.")
+
+    print()
+    print("=" * 96)
+    print("Error scales  (three different things, all called 'error', orders of magnitude apart)")
+    print("=" * 96)
+    print(f"  {'target':20s} {'mocap jitter':>13} {'on window mean':>15} {'non-repeat':>12} {'FK vs mocap':>13}")
+    for name in names:
+        s = diagnostics[name]["scales"]
+        print(f"  {name:20s} {s['mocap_frame_jitter_mm']:10.4f} mm {s['mocap_window_mean_mm']:12.4f} mm"
+              f" {s['non_repeatability_mm']:9.4f} mm {s['fk_vs_mocap_mm']:10.4f} mm")
+    reference = diagnostics[names[0]]["scales"]
+    print(f"\n  Mocap jitter averages down over ~{reference['frames_per_window']:.0f} frames per window, so what")
+    print("  actually enters B is the third-decimal figure. Non-repeatability is ~100x that:")
+    print("  the robot does not return to the same pose, and only mocap can see it -- FK")
+    print("  reports the same pose either way, because the encoders return to the same counts.")
+
+    print()
+    print("=" * 96)
+    print("What the residual is made of  (configuration 2 splits it into FK and mocap parts)")
+    print("=" * 96)
+    print(f"  {'target':20s} {'|N| FK side':>12} {'|M| mocap side':>15} {'C to robot':>12} {'C to mocap':>12}")
+    for name in names:
+        n_rms, m_rms = diagnostics[name]["split"]
+        to_robot, to_mocap = diagnostics[name]["latent"]
+        print(f"  {name:20s} {n_rms:9.3f} mm {m_rms:12.3f} mm {to_robot:9.3f} mm {to_mocap:9.3f} mm")
+    print("\n  C is base_T_rigid, the inferred true pose of the marker cluster. It sits between")
+    print("  the robot's view (A X) and mocap's view (Y B), pulled toward whichever the noise")
+    print("  model calls more trustworthy. That pull is the noise model's entire effect.")
 
     if degenerate:
         consensus = se3_mean([solutions[name][1] for name in names])
