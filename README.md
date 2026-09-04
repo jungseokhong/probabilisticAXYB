@@ -185,6 +185,39 @@ pair to `solve_axyb_prob_noiseless_a` and inverting the results places the noise
 on `A` in the link frame.
 
 
+### RB-Y1: calibration, learned FK-error model, and deployment
+
+The Python branch was used end-to-end on a Rainbow Robotics RB-Y1 against motion
+capture: three captures (Aug 25/26/27 2026, up to 500 configurations x 3 repeats),
+per-capture calibration, a learned configuration-conditioned end-effector error
+estimator, and a ROS 2 package that runs it live. Start with the model card.
+
+| document | what it answers |
+|---|---|
+| `rby1_ee_model_card.md` | the deployed estimator: input, features, loss, training, outputs, accuracy, usage, limits |
+| `rby1_calibration_readme.md` | how to capture, build the dataset, calibrate, and read the output |
+| `rby1_calibration_concepts.md` | what the quantities mean (frames, error scales, noise model, labels) |
+| `rby1_uncertainty_plan.md` | the roadmap: estimator options, decisions on record, scoreboard |
+| `reports/` | the estimator report as HTML, LaTeX and PDF |
+| `calibration_report.html`, `estimator_report.html` | published pages (calibration results; method comparison) |
+
+Scripts, in pipeline order (`examples/`):
+
+| script | role |
+|---|---|
+| `calibrate_rby1.py` | two-stage `AX=YB` calibration with the mocap anchor, diagnostics, and cross-target checks |
+| `gravity_torque.py` | URDF gravity torque per joint -- the physical load feature (`models/rby1_no_world.urdf`) |
+| `build_error_dataset.py` | calibration residuals -> supervised `(q, xi)` labels, torque features, recorded posture |
+| `fit_error_model.py` | ridge baseline + feature ablations, nested leave-one-configuration-out |
+| `train_error_network.py` | PyTorch models on a frozen config split (constant / ridge / per-target / shared / hetero) |
+| `cross_capture_test.py` | train on one capture, evaluate on another -- the generalisation test |
+| `ee_noise_model.py` | train and query the deployable 5-seed ensemble (`predict(q)`) |
+
+Results and weights live under `results/` (see `results/README.md` for which checkpoint
+to use). The ROS 2 packages (`ee_noise_msgs`, `ee_noise_estimator`) are a separate
+repository at `~/ros2_ws/ee_noise_ws/src/ee_noise/`; they vendor the model, URDF and
+calibration and do not import this repository at runtime.
+
 ### Optional solver backends
 
 Both solver functions accept `backend="numpy"`, `backend="numba"`, or

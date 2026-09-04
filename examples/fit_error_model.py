@@ -25,7 +25,11 @@ import numpy as np
 
 FEATURE_SETS = {
     "pose": "nominal link position and orientation columns",
-    "joint": "sin/cos of joint angles plus a gravity-load proxy",
+    "joint": "sin/cos of joint angles plus gravity load (URDF torque when present, else proxy)",
+    "joint-basic": "sin/cos of joint angles only -- no load feature (ablation)",
+    "joint-proxy": "sin/cos of joint angles plus the geometric proxy (ablation)",
+    "joint-torque": "sin/cos of joint angles plus URDF gravity torque (ablation)",
+    "torque-only": "URDF gravity torque alone -- how much pure load explains (ablation)",
 }
 
 
@@ -37,9 +41,27 @@ def pose_features(data, mask):
     return np.hstack([position, rotation])
 
 
-def joint_features(data, mask):
-    """Features from joint angles. Preferred when the dataset carries them."""
-    return np.hstack([data["sin_q"][mask], data["cos_q"][mask], data["gravity_proxy"][mask]])
+def _torque(data, mask):
+    # Fixed 10 N m scale so torque sits at the same order as the sin/cos columns:
+    # a constant, not data-derived, so nothing leaks across validation folds.
+    return data["gravity_torque"][mask] / 10.0
+
+
+def joint_features(data, mask, kind="joint"):
+    """Features from joint angles; ``kind`` selects the ablation variant."""
+    trig = [data["sin_q"][mask], data["cos_q"][mask]]
+    has_torque = "gravity_torque" in getattr(data, "files", data)
+    if kind == "joint-basic":
+        return np.hstack(trig)
+    if kind == "joint-proxy":
+        return np.hstack(trig + [data["gravity_proxy"][mask]])
+    if kind == "joint-torque":
+        return np.hstack(trig + [_torque(data, mask)])
+    if kind == "torque-only":
+        return _torque(data, mask)
+    # "joint": best available load feature
+    load = _torque(data, mask) if has_torque else data["gravity_proxy"][mask]
+    return np.hstack(trig + [load])
 
 
 def ridge(x, y, penalty):
@@ -116,9 +138,14 @@ def main() -> None:
     kind = arguments.features
     if kind is None:
         kind = "joint" if data["q"].shape[1] else "pose"
-    if kind == "joint" and not data["q"].shape[1]:
+    if kind != "pose" and not data["q"].shape[1]:
         parser.error("this dataset has no joint positions; rebuild it or pass --features pose")
-    builder = joint_features if kind == "joint" else pose_features
+    if "torque" in kind and "gravity_torque" not in data.files:
+        parser.error("this dataset has no gravity_torque; rebuild with --urdf or pick another set")
+    if kind == "pose":
+        builder = pose_features
+    else:
+        builder = lambda d, m, k=kind: joint_features(d, m, k)
 
     print(f"Dataset: {len(data['target'])} rows, {len(configurations)} configurations, "
           f"{len(targets)} targets")

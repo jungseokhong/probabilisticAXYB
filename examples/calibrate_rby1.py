@@ -165,7 +165,7 @@ def recover_x_given_y(a, b, y):
     return x, rotation, position
 
 
-def calibrate(a, b, iterations=ITERATIONS, verbose=True):
+def calibrate(a, b, iterations=ITERATIONS, verbose=True, covariance=True):
     """Solve one target, re-estimating the FK covariance from the residual."""
     x, y = solve_axyb(a, b)
 
@@ -208,6 +208,10 @@ def calibrate(a, b, iterations=ITERATIONS, verbose=True):
                 f"   {'converged' if result.converged else 'NOT CONVERGED'}{floored}"
             )
 
+    if not covariance:
+        # The calibration covariance is dense O(n^3) (23.6 s at n=488, ~11 min at
+        # n=1500) and label building never reads it -- skip on request.
+        return x, y, None, None, (fk_rotation, fk_position), result
     covariance_x, covariance_y, _ = compute_uncertainty(
         x,
         y,
@@ -320,11 +324,28 @@ def latent_placement(result, a, b, x, y):
 
 
 def main() -> None:
+    # The anchors are the one thing set by hand, and they change every result, so
+    # they are flags rather than edits: a run records what it assumed.
+    global MOCAP_SIGMA_POSITION, MOCAP_SIGMA_ROTATION
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("dataset", type=pathlib.Path, help="directory holding the target NPZ files")
     parser.add_argument("--iterations", type=int, default=ITERATIONS)
     parser.add_argument("--skip-sensitivity", action="store_true")
+    parser.add_argument(
+        "--mocap-sigma-position", type=float, default=MOCAP_SIGMA_POSITION * 1e3,
+        help="mocap position anchor in mm (default %(default)s)",
+    )
+    parser.add_argument(
+        "--mocap-sigma-rotation", type=float, default=np.degrees(MOCAP_SIGMA_ROTATION),
+        help="mocap rotation anchor in degrees (default %(default)s)",
+    )
     arguments = parser.parse_args()
+
+    MOCAP_SIGMA_POSITION = arguments.mocap_sigma_position * 1e-3
+    MOCAP_SIGMA_ROTATION = np.deg2rad(arguments.mocap_sigma_rotation)
+    print(f"Mocap anchor: {arguments.mocap_sigma_position:.3f} mm / "
+          f"{arguments.mocap_sigma_rotation:.3f} deg  (fixed; FK is estimated from the residual)")
 
     files = sorted(arguments.dataset.glob("*.npz"))
     if not files:
