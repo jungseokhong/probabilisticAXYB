@@ -8,7 +8,12 @@ from .lie import skew
 
 def _weighted_mapping(q: np.ndarray, covariance: np.ndarray, precision: np.ndarray):
     information = q.T @ precision @ q
-    mapping = -np.linalg.pinv(information) @ q.T @ precision
+    # The information matrix is symmetric positive semi-definite by construction, so
+    # invert it through its eigendecomposition rather than a general SVD. The generic
+    # path fails outright ("SVD did not converge") once the precision blocks span a
+    # wide enough dynamic range, which they do as soon as the rotation and position
+    # anchors differ substantially.
+    mapping = -np.linalg.pinv(information, hermitian=True) @ q.T @ precision
     estimate_covariance = mapping @ covariance @ mapping.T
     return estimate_covariance, mapping
 
