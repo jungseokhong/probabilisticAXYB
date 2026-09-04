@@ -367,3 +367,23 @@ Two ways forward:
 | `probabilistic_axyb/uncertainty.py` | calibration covariance |
 | `calibration_report.html` | Aug 25 results, with column definitions |
 | `README.md` § *Choosing a noise model on real data* | the reasoning behind §5 |
+
+## 9. How much data the calibration needs
+
+Measured on the Aug 27 end effector (500 configurations x 3 repeats), calibrating on a
+random subset and comparing `X`, `Y` against the full-data solution:
+
+| configs used | poses | `Y` shift | `X` shift |
+|---|---|---|---|
+| 25 | 75 | 2.25 mm / 0.09 deg | 1.46 mm / 0.43 deg |
+| 50 | 150 | 1.52 mm / 0.09 deg | 0.87 mm / 0.07 deg |
+| **100** | 300 | **0.69 mm / 0.04 deg** | 0.25 mm / 0.13 deg |
+| 200 | 600 | 0.95 mm / 0.04 deg | 0.45 mm / 0.06 deg |
+| 500 | 1500 | reference | reference |
+
+Below ~1.5 mm the shift is under the cross-calibration floor and cannot be told
+from noise: **~100 well-spread configurations saturate the calibration.** The
+labels, by contrast, need every pose you intend to train on -- but a label is a
+matrix product per pose, not a solve. `build_error_dataset.py --calibrate-on 100`
+solves on 100 random configurations and applies `X`, `Y` to all poses; the full
+solve remains the default.
